@@ -16,6 +16,18 @@ import java.awt.event.*;
 import java.awt.Color;
 import java.lang.Thread;
 
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.io.IOException;
+
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.SourceDataLine;
+import javax.sound.sampled.TargetDataLine;
+import javax.sound.sampled.DataLine;
+
+
 public class App extends Frame implements WindowListener, ActionListener {
 
 	/*
@@ -29,9 +41,13 @@ public class App extends Frame implements WindowListener, ActionListener {
 	public static Color gray;				
 	final static String newline="\n";		
 	static JButton callButton;				
-	
-	// TODO: Please define and initialize your variables here...
-	
+	InetAddress receiverAddress;
+	static String KEY = "12345678901234567890123456789012";
+	static String ALGORITHM = "AES";
+	static SecretKey SECRET_KEY = new SecretKeySpec(KEY.getBytes(), ALGORITHM);
+	Thread Call;
+    boolean X;
+    
 	/**
 	 * Construct the app's frame and initialize important parameters
 	 */
@@ -84,7 +100,7 @@ public class App extends Frame implements WindowListener, ActionListener {
 	 * The main method of the application. It continuously listens for
 	 * new messages.
 	 */
-	public static void main(String[] args){
+	public static void main(String[] args) throws Exception{
 	
 		/*
 		 * 1. Create the app's window
@@ -92,21 +108,68 @@ public class App extends Frame implements WindowListener, ActionListener {
 		App app = new App("CN2 - AUTH");  // TODO: You can add the title that will displayed on the Window of the App here																		  
 		app.setSize(500,250);				  
 		app.setVisible(true);				  
+		//do {
+		DatagramSocket textSocket = null;
+		try {
+			textSocket = new DatagramSocket(5000);
+		    byte[] buffer = new byte[1024];
+		    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+		    final DatagramSocket finalTextSocket = textSocket;
+		    
+		    new Thread(() -> {
+		        while (true) {
+		            try {
+		                finalTextSocket.receive(packet); 
+		                byte[] encryptedBytes = new byte[packet.getLength()];
+		                System.arraycopy(packet.getData(), 0, encryptedBytes, 0, packet.getLength());
+		                String decryptedMessage = decrypt(encryptedBytes); 
+		                textArea.append("Received: " + decryptedMessage + "\n");
+		            } catch (Exception e) {
+		                e.printStackTrace();
+		                textArea.append("Error processing incoming message.\n");
+		            }
+		        }
+		    }).start();
+		} catch (Exception ex) {
+		    ex.printStackTrace();
+		    textArea.append("Error initializing textSocket.\n");
+		}
 
-		/*
-		 * 2. 
-		 */
-		do{		
-			// TODO: Your code goes here...
-		}while(true);
+		new Thread(() -> {
+		    DatagramSocket audioSocket = null;
+		    try {
+		        audioSocket = new DatagramSocket(5001); 
+		        AudioFormat format = new AudioFormat(8000.0f, 8, 1, true, true);
+		        SourceDataLine speaker = AudioSystem.getSourceDataLine(format);
+		        speaker.open(format);
+		        speaker.start();
+
+		        byte[] buffer = new byte[1024];
+		        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+
+		        while (true) {
+		            audioSocket.receive(packet);
+		            speaker.write(packet.getData(), 0, packet.getLength());
+		        }
+
+		    } catch (Exception ex) {
+		        ex.printStackTrace();
+		    } finally {
+		        if (audioSocket != null && !audioSocket.isClosed()) {
+		            audioSocket.close(); 
+		        }
+		    }
+		}).start();
+		//}while(true);
 	}
 	
 	/**
 	 * The method that corresponds to the Action Listener. Whenever an action is performed
 	 * (i.e., one of the buttons is clicked) this method is executed. 
 	 */
+	@SuppressWarnings("removal")
 	@Override
-	public void actionPerformed(ActionEvent e) {
+	public void actionPerformed(ActionEvent e){
 		
 	
 
@@ -114,24 +177,80 @@ public class App extends Frame implements WindowListener, ActionListener {
 		 * Check which button was clicked.
 		 */
 		if (e.getSource() == sendButton){
-			
-			// The "Send" button was clicked
-			
-			// TODO: Your code goes here...
-		
-			
+			new Thread(() -> {
+			try(DatagramSocket socket = new DatagramSocket()){
+				String message = inputTextField.getText();
+				byte[] buffer = encrypt(message);
+				InetAddress receiverAddress = InetAddress.getByName("192.168.1.15");
+				DatagramPacket packet = new DatagramPacket(buffer, buffer.length, receiverAddress, 5000);
+				socket.send(packet);
+				textArea.append("Sent: " + inputTextField.getText() + "\n");
+			}catch (Exception ex) {
+				ex.printStackTrace();
+				textArea.append("Error during text transmission.\n");
+			}
+			}).start();
 		}else if(e.getSource() == callButton){
 			
-			// The "Call" button was clicked
-			
-			// TODO: Your code goes here...
-			
-			
-		}
+			if (Call != null && Call.isAlive()) {
+				X = false;
+	            Call.interrupt();
+	            textArea.append("Call stopped.\n");
+	            return;
+			}else {
+				X = true;
+			}
+				
+				Call = new Thread(() -> {
+				textArea.append("Starting call...\n");
+				try(DatagramSocket socket = new DatagramSocket()) {
+					AudioFormat format = new AudioFormat(8000.0f, 8, 1, true, true);
+					TargetDataLine microphone = AudioSystem.getTargetDataLine(format);
+					microphone.open(format);
+					microphone.start();
+					byte[] buffer = new byte[1024];
+					DatagramPacket packet;
+					InetAddress receiverAddress = InetAddress.getByName("192.168.1.15");
+					while ( X) {
+						int bytesRead = microphone.read(buffer, 0, buffer.length);
+						boolean detectsSound = false;
+						for (int i = 0; i < bytesRead; i++) {
+							if (buffer[i] != 0) {
+								detectsSound = true;
+								;
+							}
+						}
+						if (detectsSound) {
+							packet = new DatagramPacket(buffer, bytesRead, receiverAddress, 5001);
+							socket.send(packet);
+						}
+					}
+					microphone.stop();
+					microphone.close();
+				}catch (Exception ex) {
+					ex.printStackTrace();
+					textArea.append("Error during audio transmission.\n");
+				}
+				
+			});
+			Call.start();
+	}
+		
 			
 
 	}
+	 public static byte[] encrypt(String data) throws Exception {
+	        Cipher cipher = Cipher.getInstance(ALGORITHM);
+	        cipher.init(Cipher.ENCRYPT_MODE, SECRET_KEY);
+	        return cipher.doFinal(data.getBytes());
+	    }
 
+	  public static String decrypt(byte[] data) throws Exception {
+	        Cipher cipher = Cipher.getInstance(ALGORITHM);
+	        cipher.init(Cipher.DECRYPT_MODE, SECRET_KEY);
+	        byte[] decryptedBytes = cipher.doFinal(data);
+	        return new String(decryptedBytes);
+	  }
 	/**
 	 * These methods have to do with the GUI. You can use them if you wish to define
 	 * what the program should do in specific scenarios (e.g., when closing the 
